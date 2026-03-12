@@ -15,45 +15,63 @@ public class KitManager {
     public KitManager(Path d){this.dataDir=d;try{Files.createDirectories(d);}catch(Exception e){}loadDefaults();load();}
     public int getKitCount(){return kits.size();}
     private void loadDefaults(){
-        kits.put("warrior",new Kit("warrior","Heavy melee fighter. High defense.","Iron Sword, Iron Helmet, Iron Chestplate, 16 Arrows","none",300));
-        kits.put("archer",new Kit("archer","Ranged specialist. Fast movement.","Bow, 64 Arrows, Leather Armor","none",300));
-        kits.put("assassin",new Kit("assassin","High damage, no armor. Risk vs reward.","Diamond Sword, Speed Potion","none",300));
-        kits.put("tank",new Kit("tank","Maximum protection. Premium kit.","Diamond Armor, Iron Sword, Shield","vip",600));
+        kits.put("starter",new Kit("starter","Starter","Basic starter kit for new players","",0));
+        kits.put("warrior",new Kit("warrior","Warrior","Heavy combat kit with armor and sword","",30));
+        kits.put("archer",new Kit("archer","Archer","Ranged kit with bow and arrows","",30));
+        kits.put("vip",new Kit("vip","VIP","Premium kit for VIP players","vip",60));
     }
+    public boolean isOnCooldown(UUID uid,String kitId){
+        Map<String,Long> cd=cooldowns.get(uid);if(cd==null)return false;
+        Long last=cd.get(kitId);if(last==null)return false;
+        Kit k=kits.get(kitId);if(k==null)return false;
+        return System.currentTimeMillis()-last<k.getCooldownMin()*60_000L;
+    }
+    public long secondsLeft(UUID uid,String kitId){
+        Map<String,Long> cd=cooldowns.get(uid);if(cd==null)return 0;
+        Long last=cd.get(kitId);if(last==null)return 0;
+        Kit k=kits.get(kitId);if(k==null)return 0;
+        return Math.max(0,(k.getCooldownMin()*60_000L-(System.currentTimeMillis()-last))/1000);
+    }
+    public void applyKit(UUID uid,String kitId){cooldowns.computeIfAbsent(uid,k->new HashMap<>()).put(kitId,System.currentTimeMillis());}
     public void save(){try{StringBuilder sb=new StringBuilder();for(Kit k:kits.values())sb.append(k.toConfig()).append("\n");Files.writeString(dataDir.resolve("kits.txt"),sb.toString());}catch(Exception e){}}
-    private void load(){try{Path f=dataDir.resolve("kits.txt");if(!Files.exists(f))return;for(String l:Files.readAllLines(f)){Kit k=Kit.fromConfig(l);if(k!=null)kits.put(k.getName().toLowerCase(),k);}}catch(Exception e){}}
-    private long getCooldownRemaining(UUID uid,String kit){Map<String,Long> m=cooldowns.getOrDefault(uid,Map.of());Long last=m.get(kit);if(last==null)return 0;Kit k=kits.get(kit);long elapsed=(System.currentTimeMillis()-last)/1000;return Math.max(0,(long)k.getCooldownSec()-elapsed);}
-    private void setCooldown(UUID uid,String kit){cooldowns.computeIfAbsent(uid,k->new ConcurrentHashMap<>()).put(kit,System.currentTimeMillis());}
-    public AbstractPlayerCommand getKitCommand(){
-        return new AbstractPlayerCommand("kit","Select a combat kit. /kit list | /kit <name>"){
-            @Override protected void execute(CommandContext ctx,Store<EntityStore> store,Ref<EntityStore> ref,PlayerRef playerRef,World world){
-                String input=ctx.getInputString().trim();
-                if(input.isEmpty()||input.equalsIgnoreCase("list")){
-                    playerRef.sendMessage(Message.raw("=== Available Kits ==="));
-                    for(Kit k:kits.values()){String tag=k.isPermRequired()?"§6["+k.getPermission()+"]§r ":"";playerRef.sendMessage(Message.raw("  /kit "+k.getName()+" — "+tag+k.getDescription()));}
-                    return;
+    private void load(){try{Path f=dataDir.resolve("kits.txt");if(!Files.exists(f))return;kits.clear();for(String l:Files.readAllLines(f)){Kit k=Kit.fromConfig(l);if(k!=null)kits.put(k.getId(),k);}}catch(Exception e){}}
+    public AbstractPlayerCommand getKitsCommand(){
+        return new AbstractPlayerCommand("kits","List available kits. /kits"){
+            @Override protected void execute(CommandContext ctx,Store<EntityStore> s,Ref<EntityStore> r,PlayerRef pr,World w){
+                pr.sendMessage(Message.raw("=== Available Kits ==="));
+                for(Kit k:kits.values()){
+                    String cd=k.getCooldownMin()==0?"no cooldown":k.getCooldownMin()+"m cooldown";
+                    String status=isOnCooldown(pr.getUuid(),k.getId())?"§c("+secondsLeft(pr.getUuid(),k.getId())+"s)§r":"§a(ready)§r";
+                    pr.sendMessage(Message.raw("  §6/kit "+k.getId()+"§r — "+k.getName()+": "+k.getDescription()+" ["+cd+"] "+status));
                 }
-                Kit k=kits.get(input.toLowerCase());
-                if(k==null){playerRef.sendMessage(Message.raw("[Kit] Unknown kit. /kit list"));return;}
-                long cd=getCooldownRemaining(playerRef.getUuid(),k.getName().toLowerCase());
-                if(cd>0){playerRef.sendMessage(Message.raw("[Kit] §c"+k.getName()+"§r on cooldown: "+cd+"s"));return;}
-                setCooldown(playerRef.getUuid(),k.getName().toLowerCase());
-                playerRef.sendMessage(Message.raw("[Kit] §6"+k.getName()+"§r equipped! Contents: §7"+k.getContents()));
-                playerRef.sendMessage(Message.raw("[Kit] Cooldown: §e"+k.getCooldownSec()+"s"));
+            }
+        };
+    }
+    public AbstractPlayerCommand getKitCommand(){
+        return new AbstractPlayerCommand("kit","Select a kit. /kit <id>"){
+            @Override protected void execute(CommandContext ctx,Store<EntityStore> s,Ref<EntityStore> r,PlayerRef pr,World w){
+                String id=ctx.getInputString().trim().toLowerCase();
+                if(id.isEmpty()){pr.sendMessage(Message.raw("Usage: /kit <id> — /kits to list"));return;}
+                Kit k=kits.get(id);if(k==null){pr.sendMessage(Message.raw("[Kit] Unknown kit: "+id));return;}
+                if(isOnCooldown(pr.getUuid(),id)){pr.sendMessage(Message.raw("[Kit] Cooldown: "+secondsLeft(pr.getUuid(),id)+"s remaining."));return;}
+                applyKit(pr.getUuid(),id);
+                pr.sendMessage(Message.raw("[Kit] §6"+k.getName()+"§r applied!"+(k.getCooldownMin()>0?" ("+k.getCooldownMin()+"m cooldown)":"")));
+                System.out.println("[KitPvP] "+pr.getUsername()+" selected kit: "+id);
             }
         };
     }
     public AbstractPlayerCommand getKitAdminCommand(){
-        return new AbstractPlayerCommand("kitadmin","[Admin] Manage kits. /kitadmin list|remove <name>|reload"){
-            @Override protected void execute(CommandContext ctx,Store<EntityStore> store,Ref<EntityStore> ref,PlayerRef playerRef,World world){
-                String[]args=ctx.getInputString().trim().split("\\s+",2);
-                String sub=args.length>0?args[0].toLowerCase():"list";
-                switch(sub){
-                    case"list"->{playerRef.sendMessage(Message.raw("[Kits] "+kits.size()+" kits: "+String.join(", ",kits.keySet())));}
-                    case"remove"->{if(args.length<2)break;if(kits.remove(args[1])!=null){save();playerRef.sendMessage(Message.raw("[Kits] Removed: "+args[1]));}else{playerRef.sendMessage(Message.raw("[Kits] Not found: "+args[1]));}}
-                    case"reload"->{kits.clear();loadDefaults();load();playerRef.sendMessage(Message.raw("[Kits] Reloaded. "+kits.size()+" kits."));}
-                    default->playerRef.sendMessage(Message.raw("Usage: /kitadmin list|remove <name>|reload"));
-                }
+        return new AbstractPlayerCommand("kitadmin","[Admin] Create/delete kits. /kitadmin create|delete|reload"){
+            @Override protected void execute(CommandContext ctx,Store<EntityStore> s,Ref<EntityStore> r,PlayerRef pr,World w){
+                String[]args=ctx.getInputString().trim().split("\\s+",5);
+                String sub=args.length>0?args[0].toLowerCase():"help";
+                if(sub.equals("reload")){load();pr.sendMessage(Message.raw("[Kit] Reloaded "+kits.size()+" kits."));}
+                else if(sub.equals("delete")&&args.length>1){kits.remove(args[1]);save();pr.sendMessage(Message.raw("[Kit] Deleted: "+args[1]));}
+                else if(sub.equals("create")&&args.length>=4){
+                    int cd=0;try{if(args.length>4)cd=Integer.parseInt(args[4]);}catch(Exception e){}
+                    kits.put(args[1].toLowerCase(),new Kit(args[1].toLowerCase(),args[2],args[3],"",cd));save();
+                    pr.sendMessage(Message.raw("[Kit] Created: "+args[2]));
+                }else pr.sendMessage(Message.raw("Usage: /kitadmin create <id> <name> <desc> [cooldown_min] | delete <id> | reload"));
             }
         };
     }
